@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { Fragment, useState, useEffect } from 'react'
 import {
   Database,
   Wrench,
@@ -11,6 +11,7 @@ import {
   Plus,
   Minus,
   Package,
+  FolderPlus,
 } from 'lucide-react'
 import { useResourceStore } from '@/stores/resource-store'
 import { useUIStore } from '@/stores/ui-store'
@@ -18,7 +19,7 @@ import { useWorkspaceToolStore } from '@/stores/workspace-tool-store'
 import { useWorkspaceDatasetStore } from '@/stores/workspace-dataset-store'
 import { useUnsavedMarks } from '@/hooks/use-unsaved-marks'
 import { cn } from '@/lib/utils'
-import type { Resource, ResourceType, ToolResource } from '@/types/resources'
+import type { ModelResource, Resource, ResourceType, ToolResource } from '@/types/resources'
 
 interface ResourceSectionDef {
   type: ResourceType
@@ -48,6 +49,8 @@ export function ResourceBrowser() {
     fetchToolsFromApi,
     fetchDatasetsFromApi,
     fetchModelsFromApi,
+    fetchModelGroups,
+    createModelGroup,
   } = useResourceStore()
   const { rightPanelOpen, toggleRightPanel, setActiveView } = useUIStore()
   const [expandedSections, setExpandedSections] = useState<Set<string>>(
@@ -62,11 +65,13 @@ export function ResourceBrowser() {
     fetchToolsFromApi()
     fetchDatasetsFromApi()
     fetchModelsFromApi()
+    fetchModelGroups()
     // 工具空间清单以后端为准（无痕窗口 / 换浏览器时 localStorage 是空的）
     useWorkspaceToolStore.getState().fetchFromApi()
   }, []) // 空依赖，只执行一次
 
   const toggleSection = (type: string) => {
+    if (type === 'model' && !expandedSections.has(type)) void fetchModelsFromApi()
     setExpandedSections((prev) => {
       const next = new Set(prev)
       if (next.has(type)) next.delete(type)
@@ -79,6 +84,12 @@ export function ResourceBrowser() {
   const workspaceTools = useWorkspaceToolStore((s) => s.tools)
   const workspaceRemoveTool = useWorkspaceToolStore((s) => s.removeTool)
   const workspaceRemoveDataset = useWorkspaceDatasetStore((s) => s.removeDataset)
+
+  const handleCreateModelGroup = async (e: React.MouseEvent) => {
+    e.stopPropagation()
+    const name = window.prompt('新建模型分组名称')?.trim()
+    if (name) await createModelGroup(name)
+  }
 
   const getResources = (type: ResourceType): Resource[] => {
     switch (type) {
@@ -112,7 +123,14 @@ export function ResourceBrowser() {
             usageCount: 0,
           }
         })
-      case 'model': return modelResources
+      case 'model': return [
+        ...modelResources.filter((item) => (item as ModelResource).runtimeStatus !== 'trained'),
+        ...modelResources.filter((item) => (item as ModelResource).runtimeStatus === 'trained'),
+      ].sort((a, b) => {
+        const aStatus = (a as ModelResource).runtimeStatus === 'trained' ? 1 : 0
+        const bStatus = (b as ModelResource).runtimeStatus === 'trained' ? 1 : 0
+        return aStatus - bStatus || String((a as ModelResource).groupPath || '').localeCompare(String((b as ModelResource).groupPath || ''))
+      })
       case 'agent': return agentResources
       case 'task': return taskResources
       default: return []
@@ -250,16 +268,41 @@ export function ResourceBrowser() {
                   <Plus className="h-3 w-3" />
                 </button>
               )}
+              {section.type === 'model' && (
+                <button
+                  onClick={handleCreateModelGroup}
+                  className="flex items-center justify-center h-4 w-4 rounded hover:bg-emerald-500/10 text-maia-text-muted hover:text-emerald-500 transition-colors"
+                  title="新建模型分组"
+                  aria-label="新建模型分组"
+                >
+                  <FolderPlus className="h-3 w-3" />
+                </button>
+              )}
             </div>
 
             {/* Section items — indented to align under parent label */}
             {isExpanded && (
               <div>
-                {resources.map((resource) => (
-                  // 条目也必须是 div —— 行内的「删除/移除」按钮若嵌在
-                  // <button> 里会触发 React 的非法 DOM 嵌套报错
+                {resources.map((resource, index) => (
+                  <Fragment key={resource.id}>
+                  {section.type === 'model' && (() => {
+                    const current = resource as ModelResource
+                    const previous = index > 0 ? resources[index - 1] as ModelResource : undefined
+                    const currentStatus = current.runtimeStatus === 'trained' ? '已训练模型' : '模型架构与配置'
+                    const previousStatus = previous?.runtimeStatus === 'trained' ? '已训练模型' : '模型架构与配置'
+                    const currentGroup = current.groupPath || '其它模型'
+                    const previousGroup = previous?.groupPath || '其它模型'
+                    return <>
+                      {(index === 0 || currentStatus !== previousStatus) && (
+                        <div className="px-3 pt-2 pb-1 text-[10px] font-semibold text-maia-text-muted">{currentStatus}</div>
+                      )}
+                      {(index === 0 || currentStatus !== previousStatus || currentGroup !== previousGroup) && (
+                        <div className="pl-9 pt-1 pb-1 text-[10px] text-maia-text-secondary">{currentGroup}</div>
+                      )}
+                    </>
+                  })()}
+                  {/* Row actions stay outside a nested button. */}
                   <div
-                    key={resource.id}
                     role="button"
                     tabIndex={0}
                     onClick={() => handleResourceClick(resource)}
@@ -317,6 +360,7 @@ export function ResourceBrowser() {
                       <Minus className="h-3 w-3" />
                     </button>
                   </div>
+                  </Fragment>
                 ))}
                 {resources.length === 0 && (
                   <p className="text-[10px] text-maia-text-muted py-1 px-1.5 tracking-wide">
