@@ -14,6 +14,7 @@ interface ResourceState {
   dataResources: Resource[]
   toolResources: Resource[]
   modelResources: Resource[]
+  modelGroups: Array<{ id: string; name: string; system?: boolean }>
   agentResources: Resource[]
   taskResources: Resource[]
   isLoading: boolean
@@ -26,6 +27,8 @@ interface ResourceState {
   fetchToolsFromApi: () => Promise<void>
   fetchDatasetsFromApi: () => Promise<void>
   fetchModelsFromApi: () => Promise<void>
+  fetchModelGroups: () => Promise<void>
+  createModelGroup: (name: string) => Promise<boolean>
 }
 
 export const useResourceStore = create<ResourceState>((set, get) => ({
@@ -33,6 +36,7 @@ export const useResourceStore = create<ResourceState>((set, get) => ({
   dataResources: [],
   toolResources: [],
   modelResources: [],
+  modelGroups: [],
   agentResources: [],
   taskResources: [],
   isLoading: false,
@@ -203,15 +207,46 @@ export const useResourceStore = create<ResourceState>((set, get) => ({
       const BASE_URL = ''
       const res = await fetch(`${BASE_URL}/api/model/list`)
       const data = await res.json()
-      if (Array.isArray(data.models) && data.models.length > 0) {
+      if (Array.isArray(data.models)) {
         set({ modelResources: data.models.map((m: Record<string, unknown>) => ({
           id: m.id as string, name: (m.name as string) || (m.id as string), description: '',
           type: 'model' as const, version: (m.version as string) || '0.1.0', status: 'active' as const,
           createdAt: (m.created_at as string) || '', updatedAt: '',
-          tags: (m.tags as string[]) || [], format: (m.framework as string) || '',
-          filePath: (m.model_path as string) || '', fileSize: 0, source: 'upload' as const, lineage: [],
+          tags: (m.tags as string[]) || [],
+          framework: (m.framework as string) || '',
+          modelType: 'timeseries' as const,
+          weightPath: (m.model_path as string) || '',
+          inputFormat: m.input_format ? [String(m.input_format)] : [],
+          outputFormat: m.output_format ? [String(m.output_format)] : [],
+          deploymentStatus: 'registered' as const,
+          relatedToolId: (m.associated_tool_id as string) || '',
+          runtimeStatus: (m.runtime_status as string) || 'configured',
+          groupPath: (m.group_path as string) || '其它模型',
         })) })
       }
     } catch { /* ignore */ }
+  },
+
+  fetchModelGroups: async () => {
+    try {
+      const res = await fetch('/api/model/groups')
+      const data = await res.json()
+      if (Array.isArray(data.groups)) set({ modelGroups: data.groups })
+    } catch { /* ignore */ }
+  },
+
+  createModelGroup: async (name: string) => {
+    try {
+      const res = await fetch('/api/model/groups', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      })
+      if (!res.ok) return false
+      await get().fetchModelGroups()
+      return true
+    } catch {
+      return false
+    }
   },
 }))

@@ -400,7 +400,9 @@ class AppConfig:
     app_name: str = "SOTABand"
     debug: bool = False
     api_host: str = "0.0.0.0"
-    api_port: int = 8001
+    # The refactor checkout uses 8002 by default so it can run beside the
+    # baseline checkout, which keeps its historical 8001 port.
+    api_port: int = int(os.environ.get("SOTABAND_API_PORT", "8002"))
     cors_origins: list = field(default_factory=lambda: ["*"])
 
 

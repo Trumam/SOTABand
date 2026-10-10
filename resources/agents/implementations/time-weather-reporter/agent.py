@@ -32,6 +32,22 @@ class TimeWeatherReporter(BaseAgent):
             self._llm = create_llm_client(settings.llm)
         return self._llm
 
+    def _call_tool_get_weather(self, **params) -> dict:
+        """调用系统天气工具，保持 Agent 与工具执行器使用同一运行环境。"""
+        from core.executor.tool_executor import ToolExecutor
+
+        city = params.get("city", "广州")
+        return ToolExecutor.execute_sync(
+            "city-weather-reporter",
+            {
+                "city": city,
+                "units": "metric",
+                "lang": "zh_cn",
+                "output_format": "text",
+            },
+            timeout=30,
+        )
+
     def _log_step(self, step_name: str, action: str, input_data: dict = None, output_data: dict = None, error: str = None):
         """记录执行步骤日志到 resources/agents/logs/{agent_id}-{timestamp}.md"""
         if not hasattr(self, '_log_file'):

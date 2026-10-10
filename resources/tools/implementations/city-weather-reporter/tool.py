@@ -62,18 +62,31 @@ except ImportError:
 # 常用中文城市名到英文名的映射（用于备用天气API）
 CITY_NAME_MAP = {
     "广州": "Guangzhou",
+    "广州市": "Guangzhou",
     "北京": "Beijing",
+    "北京市": "Beijing",
     "上海": "Shanghai",
+    "上海市": "Shanghai",
     "深圳": "Shenzhen",
+    "深圳市": "Shenzhen",
     "杭州": "Hangzhou",
+    "杭州市": "Hangzhou",
     "成都": "Chengdu",
+    "成都市": "Chengdu",
     "重庆": "Chongqing",
+    "重庆市": "Chongqing",
     "武汉": "Wuhan",
+    "武汉市": "Wuhan",
     "南京": "Nanjing",
+    "南京市": "Nanjing",
     "天津": "Tianjin",
+    "天津市": "Tianjin",
     "西安": "Xi'an",
+    "西安市": "Xi'an",
     "厦门": "Xiamen",
+    "厦门市": "Xiamen",
     "青岛": "Qingdao",
+    "青岛市": "Qingdao",
 }
 
 # WMO Weather Codes 简单映射表（中英文）

@@ -55,6 +55,11 @@ docker-compose.override.yml
 
 # 运行时产物（日志、训练生成的模型）
 logs/
+*.log
+*.out.log
+*.err.log
+/resources/agents/logs/
+/resources/tasks/runs/
 predict.pkl
 models/*.pt
 models/*_2026*.pkl
@@ -67,6 +72,8 @@ models/linear_regression_*.pkl
 # Local runtime state
 storage/user.json
 storage/workspace_tools.json
+storage/backend.log
+storage/backend-error.log
 
 # Generated local assessment logs
 logs/aerial-image-quality-batch-assessment_*.md
