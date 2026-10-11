@@ -26,6 +26,18 @@ Pop-Location
 
 完整链路验收使用 `scripts/verify_hypoxemia_pr.py`：合成原始 CSV/ZIP 或窗口数据 → 数据检查 → 短训练 → 保存模型 → 按模型 ID 重选 → 另一数据集评测 → HTTP 下载 Excel。每次验收使用新的 `SOTABAND_RUNTIME_ROOT`，不读取旧任务登记表、旧模型绝对路径或外部研究项目。
 
+在仓库根目录、完成 `scripts/install_hypoxemia.ps1 -WithVerification` 安装后运行：
+
+```powershell
+$env:SOTABAND_LOAD_DOTENV = '0'
+Remove-Item Env:SPO2_HYPOXEMIA_PROJECT -ErrorAction SilentlyContinue
+Remove-Item Env:SPO2_HYPOXEMIA_PYTHON -ErrorAction SilentlyContinue
+$env:SOTABAND_RUNTIME_ROOT = Join-Path (Get-Location) ('.runtime/acceptance-' + [guid]::NewGuid().ToString('N'))
+.\.venv-hypoxemia\Scripts\python.exe scripts/verify_hypoxemia_pr.py --model SegRNN
+```
+
+每次执行都会使用一个新的运行目录；不要把该命令指向已有的任务注册表。正常启动平台前，在该终端执行 `Remove-Item Env:SOTABAND_LOAD_DOTENV -ErrorAction SilentlyContinue`，让本机 `.env` 配置生效。
+
 ## 测试结果
 
 | 检查 | 结果 |
@@ -55,7 +67,11 @@ Pop-Location
 
 在此新检出中执行 `npm ci`、`npm run build`、`pytest tests/unit -q`、来源校验与模型目录烟测，结果分别为前端构建通过、131 项单元测试通过、48 个来源文件校验通过、38 个模型通过且 6 个明确跳过。清除旧低氧项目环境变量并设置 `SOTABAND_LOAD_DOTENV=0`，使用新 `SOTABAND_RUNTIME_ROOT` 运行 `verify_hypoxemia_pr.py --model SegRNN`：合成原始 ZIP 生成 24 个窗口；单轮训练得到模型 ID；按 ID 重载后在另一数据集的 8 个验证窗口评测；Excel 下载路由返回 HTTP 200，工作簿及模型、数据集来源核对通过。错误采样率、通道顺序、短窗口、缺失权重、任务启动失败和取消均按预期拒绝或记录。
 
-另在该新检出启动后端 `18002` 与前端 `15174`，后端健康接口、前端首页和前端代理健康接口均返回 HTTP 200；验收后关闭这两个专用服务。使用不同端口是因为默认 `8002/5174` 已被其他本地进程占用。没有使用真实 LLM API Key，未人工验证浏览器中的对话交互。
+首次部署验收还在该新检出启动后端 `18002` 与前端 `15174`，后端健康接口、前端首页和前端代理健康接口均返回 HTTP 200；验收后关闭这两个专用服务。使用不同端口是因为默认 `8002/5174` 已被其他本地进程占用。该次检查没有使用真实 LLM API Key，也没有通过浏览器操作对话。
+
+随后在同一独立检出中，使用临时安装于 Git 忽略目录的 Playwright 和 Edge 驱动浏览器界面，沿使用指南输入并操作：已处理合成数据检查（48 窗口）→ SegRNN 单轮训练 → 保存模型 → 在新一轮对话中按返回的模型 ID 重新选择 → 另一份合成数据（60 窗口）评测。页面显示本次验证集 8 个窗口及指标，两个评测结果均出现 Excel 下载入口；经前端代理请求独立评测的 Excel 返回 HTTP 200，浏览器没有脚本错误。此检查验证了真实网页输入与卡片流程，但未验证开放式 LLM 对话或真实患者数据。浏览器驱动和运行产物均未提交。
+
+补全上方可复制命令后，在新运行目录再次执行，原始 ZIP 得到 24 窗口；SegRNN 单轮训练、模型 ID 重载、60 窗口独立数据的 8 窗口验证集评测、Excel 打开及 HTTP 下载全部通过，错误输入、缺失产物、任务启动失败和取消检查也通过。
 
 | 新检出内容 | 文件逻辑大小，约 |
 | --- | ---: |

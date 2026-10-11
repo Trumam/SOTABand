@@ -27,7 +27,14 @@
 
 ### 1.2 打开正确的项目目录
 
-取得**包含内置低氧组件及安装脚本的版本**后，在资源管理器中打开项目根目录，再在该目录打开 PowerShell。这里应能看到 `app`、`frontend`、`requirements`、`scripts` 等文件夹。
+审查期间，使用包含内置低氧组件的 PR 分支：
+
+```powershell
+git clone --branch review/hypoxemia-builtin-20261011 --single-branch https://github.com/Trumam/SOTABand.git SOTABand
+Set-Location .\SOTABand
+```
+
+该 PR 合并到你仓库的 `main` 后，新用户可改用 `git clone https://github.com/Trumam/SOTABand.git SOTABand`。若从别处取得完整源码包，在资源管理器中打开项目根目录，再在该目录打开 PowerShell。这里应能看到 `app`、`frontend`、`requirements`、`scripts` 等文件夹。
 
 执行：
 
