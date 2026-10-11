@@ -14,7 +14,6 @@ import sys
 import time
 import zipfile
 import argparse
-import io
 import hashlib
 import subprocess
 from datetime import datetime, timedelta
@@ -27,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from core.runtime.paths import RUNTIME_ROOT
 from core.task.task_manager import TaskManager
 from core.timeseries.manifests import write_dataset_manifest
+from resources.workflows.hypoxemia.runtime_config import compute_env
 
 
 def await_task(request):
@@ -156,21 +156,23 @@ def main() -> None:
     assert result["dataset_id"] == "synthetic-evaluation", result
     excel = Path(result["excel_path"])
     assert excel.is_file() and zipfile.is_zipfile(excel), excel
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
-    from openpyxl import load_workbook
-    from app.api.routes.file_routes import router
-    api = FastAPI()
-    api.include_router(router, prefix="/api/file")
-    response = TestClient(api).get("/api/file/download", params={"path": str(excel)})
-    assert response.status_code == 200 and response.content == excel.read_bytes()
-    assert "attachment" in response.headers["content-disposition"]
-    book = load_workbook(io.BytesIO(response.content), read_only=True)
-    rows = list(book.active.values)
-    book.close()
-    assert ("provenance", "model_resource_id", model_id) in rows
-    assert ("provenance", "dataset_id", "synthetic-evaluation") in rows
-    assert any(row[1] == "f1" for row in rows)
+    # The download route belongs to the platform environment, so invoke its
+    # verification in a separate process instead of importing FastAPI here.
+    platform_python = os.environ.get("SOTABAND_PLATFORM_PYTHON", "")
+    if not platform_python:
+        relative = "Scripts/python.exe" if os.name == "nt" else "bin/python"
+        platform_python = str(project / ".venv-platform" / relative)
+    route_check = subprocess.run(
+        [platform_python, str(project / "scripts/verify_hypoxemia_download.py"),
+         "--excel", str(excel), "--model-id", model_id],
+        env={**compute_env(), "SOTABAND_RUNTIME_ROOT": str(RUNTIME_ROOT),
+             "SOTABAND_LOAD_DOTENV": "0"},
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    assert route_check.returncode == 0, route_check.stdout + route_check.stderr
+    download_evidence = json.loads(route_check.stdout)
 
     mismatched = dataset / "dataset_manifest.json"
     original = mismatched.read_text(encoding="utf-8")
@@ -231,7 +233,7 @@ def main() -> None:
     assert manager.cancel(cancelled["id"])["status"] == "cancelled"
     assert manager.cancel(cancelled["id"])["status"] == "cancelled"
 
-    from resources.workflows.hypoxemia.runtime_config import compute_python, compute_env
+    from resources.workflows.hypoxemia.runtime_config import compute_python
     version = subprocess.check_output([compute_python(), "-c", "import sys,torch; print(sys.version); print(torch.__version__)"],
                                      env=compute_env(), text=True, encoding="utf-8")
 
@@ -249,7 +251,7 @@ def main() -> None:
         "short_window_rejected": True,
         "channel_mismatch_rejected": True, "all_short_windows_rejected": True,
         "missing_artifact_rejected": True, "launch_failure_persisted": True,
-        "cancellation_persisted": True, "excel_opened_and_downloaded": True,
+        "cancellation_persisted": True, "excel_opened_and_downloaded": download_evidence,
         "weights_sha256": hashlib.sha256(weights.read_bytes()).hexdigest(),
     }
     (RUNTIME_ROOT / "acceptance.json").write_text(json.dumps(evidence, ensure_ascii=False, indent=2), encoding="utf-8")
