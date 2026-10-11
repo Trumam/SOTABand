@@ -2,6 +2,7 @@
 
 import json
 import time
+import uuid
 from pathlib import Path
 
 from core.resource.registry.json_store import update_json_list
@@ -42,6 +43,33 @@ class ModelRegistry(BaseRegistry):
     def default_group_path(resource: dict) -> str:
         """Use explicit registration metadata; the core registry has no domain rules."""
         return str(resource.get("group_path") or resource.get("domain_group") or "其它模型")
+
+    @staticmethod
+    def model_category(resource: dict) -> str:
+        if resource.get("runtime_status") != "trained":
+            return "architecture"
+        path = Path(str(resource.get("model_path") or "")).expanduser()
+        if resource.get("associated_tool_id") == "timeseries-classification-runner":
+            required = (
+                "best_model.pt", "scaler.pkl", "tslib_model_config.json",
+                "threshold_report_f1.json", "manifest.json",
+            )
+            available = path.name == "best_model.pt" and all(
+                (path.parent / name).is_file() for name in required
+            )
+        else:
+            available = bool(resource.get("model_path")) and path.exists()
+        return "trained" if available else "architecture"
+
+    @classmethod
+    def _display_resource(cls, entry: dict) -> dict:
+        category = cls.model_category(entry)
+        return {
+            **entry,
+            "group_path": entry.get("group_path") or cls.default_group_path(entry),
+            "model_category": category,
+            "artifact_available": category == "trained",
+        }
 
     async def register(self, resource: dict | None = None, **kwargs) -> str:
         if resource is None:
@@ -117,14 +145,11 @@ class ModelRegistry(BaseRegistry):
     async def get(self, resource_id: str) -> dict | None:
         for e in self._read():
             if e["id"] == resource_id:
-                return {**e, "group_path": e.get("group_path") or self.default_group_path(e)}
+                return self._display_resource(e)
         return None
 
     async def list_all(self) -> list[dict]:
-        return [
-            {**entry, "group_path": entry.get("group_path") or self.default_group_path(entry)}
-            for entry in self._read()
-        ]
+        return [self._display_resource(entry) for entry in self._read()]
 
     def _read_groups(self) -> list[dict]:
         try:
@@ -139,25 +164,58 @@ class ModelRegistry(BaseRegistry):
         )
 
     async def list_groups(self) -> list[dict]:
-        groups = self._read_groups()
-        known = {str(item.get("name")) for item in groups}
-        for name in {self.default_group_path(entry) for entry in self._read()}:
-            if name not in known:
-                groups.append({"id": name, "name": name, "system": True})
+        groups: list[dict] = []
+        for item in self._read_groups():
+            if not isinstance(item, dict) or not item.get("name"):
+                continue
+            # Legacy groups had no category. Make them visible in both lists
+            # until each category is edited independently.
+            categories = (item["category"],) if item.get("category") in {"trained", "architecture"} else ("trained", "architecture")
+            for category in categories:
+                stored_id = str(item.get("id", item["name"]))
+                group_id = stored_id if stored_id.startswith(f"{category}:") else f"{category}:{stored_id}"
+                groups.append({**item, "id": group_id, "category": category})
+        known = {(item["category"], item["name"]) for item in groups}
+        for entry in self._read():
+            key = (self.model_category(entry), self.default_group_path(entry))
+            if key not in known:
+                groups.append({"id": f"{key[0]}:{key[1]}", "name": key[1], "category": key[0], "system": True})
+                known.add(key)
+        for category in ("trained", "architecture"):
+            key = (category, "其它模型")
+            if key not in known:
+                groups.append({"id": f"{category}:other", "name": key[1], "category": category, "system": True})
         return groups
 
-    async def create_group(self, name: str) -> dict:
+    async def create_group(self, name: str, category: str) -> dict:
+        if category not in {"trained", "architecture"}:
+            raise ValueError("模型分组类别无效")
         clean = " ".join(str(name or "").split()).strip()
         if not clean or len(clean) > 80:
             raise ValueError("分组名称不能为空且不能超过 80 个字符")
         groups = await self.list_groups()
-        existing = next((item for item in groups if item.get("name") == clean), None)
+        existing = next((item for item in groups if item["category"] == category and item["name"] == clean), None)
         if existing:
             return existing
-        group = {"id": f"custom-{int(time.time())}", "name": clean, "system": False}
+        group = {"id": f"{category}:custom-{uuid.uuid4().hex}", "name": clean, "category": category, "system": False}
         groups.append(group)
         self._write_groups(groups)
         return group
+
+    async def delete_group(self, group_id: str) -> None:
+        groups = await self.list_groups()
+        group = next((item for item in groups if item["id"] == group_id), None)
+        if group is None:
+            raise KeyError(group_id)
+        if group.get("system"):
+            raise ValueError("系统分组不能删除")
+        if any(
+            self.model_category(entry) == group["category"]
+            and self.default_group_path(entry) == group["name"]
+            for entry in self._read()
+        ):
+            raise ValueError("分组中仍有模型，请先移动模型")
+        self._write_groups([item for item in groups if item["id"] != group_id])
 
     async def update(self, resource_id: str, updates: dict):
         def change(data):

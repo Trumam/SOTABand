@@ -308,7 +308,7 @@ function TaskProgressCard({ title, summary, data }: { title: string; summary: st
   const nextActionLabel = String(
     task?.metadata?.next_action_label ||
     data.next_action_label ||
-    (nextAction === '开始评测' ? '开始评测' : '继续扫描数据集'),
+    (nextAction === '开始评测' ? '开始评测' : '扫描处理结果'),
   )
   const statusLabel: Record<TaskState['status'], string> = {
     queued: '排队中', running: '运行中', completed: '已完成', failed: '失败', cancelled: '已取消',

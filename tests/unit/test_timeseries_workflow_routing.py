@@ -71,12 +71,30 @@ def test_timeseries_context_fills_follow_up_parameters():
         "model_id": "model-1"
     }
     assert agent._apply_timeseries_workflow_context("session-1", tool, "train", {}) == {
-        "dataset": "spo2-five-channel-1",
+        "dataset": r"D:\data\five-channel",
         "model_id": "model-1",
     }
     assert agent._apply_timeseries_workflow_context("session-1", tool, "evaluate", {}) == {
         "task_id": "task-1", "model_id": "model-1", "dataset_id": "spo2-five-channel-1"
     }
+
+
+def test_training_prefers_scanned_dataset_path_over_manifest_only_id():
+    agent = InteractiveAgent()
+    agent._timeseries_workflows = {
+        "session-1": {
+            "processed_dataset_path": r"D:\runtime\synthetic-windows",
+            "dataset_id": "synthetic-pr-acceptance",
+            "model_id": "SegRNN",
+        }
+    }
+
+    result = agent._apply_timeseries_workflow_context(
+        "session-1", {"id": "timeseries-classification-runner"}, "train", {}
+    )
+
+    assert result["dataset"] == r"D:\runtime\synthetic-windows"
+    assert result["model_id"] == "SegRNN"
 
 
 def test_dataset_source_selection_keeps_uploaded_path_for_next_step():
@@ -205,17 +223,50 @@ def test_model_choice_contains_create_and_other():
     assert candidates[-1]["id"] == "__other__"
     assert any(item["id"] == "SegRNNDualScaleV2" for item in candidates)
     assert all(item.get("runtime_status") != "trained" for item in candidates)
+    assert not {"KANAD", "MultiPatchFormer", "TiDE", "WPMixer"} & {item["id"] for item in candidates}
 
 
-def test_trained_model_candidates_are_reserved_for_evaluation(monkeypatch):
+def test_model_choice_excludes_registered_designs_without_trainable_implementation(monkeypatch):
     from core.resource.registry.model_registry import ModelRegistry
+
+    monkeypatch.setattr(ModelRegistry, "_read", lambda self: [
+        {"id": "design", "name": "Design only", "model_name": "UnimplementedCustom",
+         "associated_tool_id": "timeseries-classification-runner", "runtime_status": "configured"},
+        {"id": "unsupported", "name": "Old KANAD", "model_name": "KANAD",
+         "associated_tool_id": "timeseries-classification-runner", "runtime_status": "configured"},
+        {"id": "trainable", "name": "Saved SegRNN", "model_name": "SegRNN",
+         "associated_tool_id": "timeseries-classification-runner", "runtime_status": "configured"},
+    ])
+
+    ids = {item["id"] for item in InteractiveAgent._timeseries_model_selection_candidates()}
+    assert "trainable" in ids
+    assert "design" not in ids
+    assert "unsupported" not in ids
+
+
+def test_trained_model_candidates_are_reserved_for_evaluation(tmp_path, monkeypatch):
+    from core.resource.registry.model_registry import ModelRegistry
+    from core.runtime import paths as runtime_paths
+
+    runs_root = tmp_path / "runs"
+    artifact = runs_root / "SegRNN-1" / "runs" / "run-1"
+    artifact.mkdir(parents=True)
+    for name in (
+        "best_model.pt", "scaler.pkl", "tslib_model_config.json",
+        "threshold_report_f1.json", "manifest.json",
+    ):
+        (artifact / name).touch()
+    monkeypatch.setattr(runtime_paths, "timeseries_runs_dir", lambda: runs_root)
 
     monkeypatch.setattr(ModelRegistry, "_read", lambda self: [
         {"id": "configured", "associated_tool_id": "timeseries-classification-runner",
          "runtime_status": "configured", "model_path": ""},
         {"id": "trained", "name": "Synthetic model",
          "associated_tool_id": "timeseries-classification-runner",
-         "runtime_status": "trained", "model_path": "synthetic/best_model.pt"},
+         "runtime_status": "trained", "model_path": str(artifact / "best_model.pt")},
+        {"id": "stale", "name": "Stale model",
+         "associated_tool_id": "timeseries-classification-runner",
+         "runtime_status": "trained", "model_path": str(tmp_path / "old" / "best_model.pt")},
     ])
     candidates = InteractiveAgent._timeseries_trained_model_candidates()
 
@@ -567,6 +618,77 @@ async def test_training_artifact_is_registered_only_after_save_choice():
     assert calls[0]["mode"] == "inspect-model"
     assert calls[0]["artifact_path"] == "D:/runs/model-1"
     assert agent._timeseries_workflows["session-1"]["trained_model_id"] == "trained-1"
+    assert agent._timeseries_workflows["session-1"]["model_id"] == "trained-1"
+
+
+@pytest.mark.asyncio
+async def test_training_artifact_skip_evaluates_current_artifact_without_config_resource():
+    agent = InteractiveAgent()
+    agent._timeseries_workflows = {
+        "session-1": {"model_id": "configured-1", "artifact_path": "D:/runs/model-1"}
+    }
+    agent._pending_timeseries_choice = {}
+    agent._pending_timeseries_input = {}
+
+    _ = [event async for event in agent._handle_timeseries_choice(
+        "session-1", {"stage": "training-artifact"}, {"id": "skip"}
+    )]
+
+    assert agent._timeseries_workflows["session-1"]["model_id"] == ""
+    assert agent._timeseries_workflows["session-1"]["artifact_path"] == "D:/runs/model-1"
+
+
+@pytest.mark.asyncio
+async def test_training_artifact_save_requires_registered_model_id():
+    agent = InteractiveAgent()
+    agent._timeseries_workflows = {
+        "session-1": {"model_id": "configured-1", "artifact_path": "D:/runs/model-1"}
+    }
+    agent._pending_timeseries_choice = {}
+
+    async def execute_tool(*_args, **_kwargs):
+        return {"status": "success", "data": {}}
+
+    agent._execute_tool = execute_tool
+    events = [event async for event in agent._handle_timeseries_choice(
+        "session-1", {"stage": "training-artifact"}, {"id": "save"}
+    )]
+
+    assert agent._timeseries_workflows["session-1"]["model_id"] == "configured-1"
+    assert agent._pending_timeseries_choice["session-1"]["stage"] == "training-artifact"
+    assert any("模型 ID" in event.get("data", {}).get("text", "") for event in events)
+
+
+@pytest.mark.asyncio
+async def test_failed_evaluation_does_not_claim_completion():
+    agent = InteractiveAgent()
+    agent._timeseries_workflows = {
+        "session-1": {
+            "dataset_id": "data-1", "processed_dataset_path": "D:/data/windows",
+            "model_id": "trained-1", "artifact_path": "D:/runs/model-1",
+            "evaluation_metrics": ["f1"], "evaluation_ready": True,
+        }
+    }
+
+    async def no_missing(*_args, **_kwargs):
+        return []
+
+    async def no_params(*_args, **_kwargs):
+        return {}
+
+    async def fail(*_args, **_kwargs):
+        return {"status": "failed", "output_format": "text", "message": "missing artifact", "data": {}}
+
+    agent._check_missing_params = no_missing
+    agent._extract_params_for_mode = no_params
+    agent._execute_tool = fail
+    ctx = type("Context", (), {"session_id": "session-1"})()
+
+    events = [event async for event in agent._execute_impl(ctx, "开始评测", [], [])]
+
+    assert any(event.get("data", {}).get("summary") == "missing artifact" for event in events)
+    assert not any("评测已完成" in event.get("data", {}).get("text", "") for event in events)
+    assert agent._timeseries_workflows["session-1"]["model_id"] == "trained-1"
 
 
 @pytest.mark.asyncio
@@ -618,6 +740,12 @@ def test_processed_dataset_candidates_only_include_visible_window_data(tmp_path,
         (root / "window_features.pkl").touch()
     for root in (ready, hidden):
         (root / "window_info.pkl").touch()
+    (ready / "window_stats.json").write_text(
+        '{"total_windows": 163}', encoding="utf-8"
+    )
+    (ready / "dataset_manifest.json").write_text(
+        '{"created_at": "2026-10-10T14:11:36Z"}', encoding="utf-8"
+    )
     entries = [
         {"id": "ready", "name": "Ready", "data_path": str(ready), "owner": "user-1"},
         {"id": "incomplete", "data_path": str(incomplete), "owner": "user-1"},
@@ -628,8 +756,44 @@ def test_processed_dataset_candidates_only_include_visible_window_data(tmp_path,
     monkeypatch.setattr(user_context, "get_current_user_id", lambda: "user-1")
 
     assert HypoxemiaWorkflowAdapter.processed_dataset_candidates() == [
-        {"id": "ready", "name": "Ready", "dataset_id": "ready"}
+        {"id": "ready", "name": "Ready（总数据量 163 个窗口，处理时间 2026-10-10 22:11）", "dataset_id": "ready"}
     ]
+
+
+def test_processed_dataset_candidates_disambiguate_same_name_and_fallback_metadata(tmp_path, monkeypatch):
+    from core.resource.registry import data_registry
+    from core import user_context
+
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    legacy = tmp_path / "legacy"
+    for root in (first, second, legacy):
+        root.mkdir()
+        (root / "window_features.pkl").touch()
+        (root / "window_info.pkl").touch()
+    (first / "window_stats.json").write_text('{"total_windows": 48}', encoding="utf-8")
+    (first / "dataset_manifest.json").write_text(
+        '{"created_at": "2026-10-10T13:00:00Z"}', encoding="utf-8"
+    )
+    (second / "window_stats.json").write_text('{"total_windows": 60}', encoding="utf-8")
+    (second / "dataset_manifest.json").write_text(
+        '{"created_at": "2026-10-10T14:00:00Z"}', encoding="utf-8"
+    )
+    entries = [
+        {"id": "first", "name": "balanced_windows_256s_30s_all", "data_path": str(first), "owner": "user-1"},
+        {"id": "second", "name": "balanced_windows_256s_30s_all", "data_path": str(second), "owner": "user-1"},
+        {"id": "legacy", "name": "balanced_windows_256s_30s_all", "data_path": str(legacy),
+         "created_at": "2026-10-10T15:22:00Z", "owner": "user-1"},
+    ]
+    monkeypatch.setattr(data_registry.DataRegistry, "claim_local_orphans", lambda self: 0)
+    monkeypatch.setattr(data_registry.DataRegistry, "_read", lambda self: entries)
+    monkeypatch.setattr(user_context, "get_current_user_id", lambda: "user-1")
+
+    candidates = HypoxemiaWorkflowAdapter.processed_dataset_candidates()
+    assert [item["id"] for item in candidates] == ["first", "second", "legacy"]
+    assert candidates[0]["name"] == "balanced_windows_256s_30s_all（总数据量 48 个窗口，处理时间 2026-10-10 21:00）"
+    assert candidates[1]["name"] == "balanced_windows_256s_30s_all（总数据量 60 个窗口，处理时间 2026-10-10 22:00）"
+    assert candidates[2]["name"] == "balanced_windows_256s_30s_all（总数据量未知，处理时间 2026-10-10 23:22）"
 
 
 @pytest.mark.asyncio

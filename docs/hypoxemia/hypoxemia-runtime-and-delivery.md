@@ -1,5 +1,7 @@
 # 运行环境与安装
 
+首次使用的完整安装、API 配置、前后端启动及三个界面示例见[从零操作指南](hypoxemia-operation-guide.md)。本页补充依赖和交付边界，实际验证记录统一见 [pr-readiness.md](pr-readiness.md)。
+
 低氧计算源码和模型实现随仓库提供。安装不需要外部研究项目、历史任务目录或预训练权重。平台与计算进程使用两个受管理的虚拟环境；两个环境均固定 Python 3.12.11。
 
 ## Windows CPU 安装
@@ -69,7 +71,7 @@ npm run dev
 
 开发页面默认端口 5174，代理后端 8002；端口可由 `SOTABAND_FRONTEND_PORT` / `SOTABAND_API_PORT` 调整。使用预构建前端的最终使用者无需安装 Node.js。当前仓库交付的是源码安装流程，不是 Windows EXE 安装包。
 
-LLM API Key 由使用者在当地配置 `.env`。离线合成验收不使用 LLM；`SOTABAND_LOAD_DOTENV=0` 可阻止验收读取本机 `.env`。不要复制开发者的 `.env`。
+LLM API Key 由使用者在本机配置 `.env`。离线合成验收不使用 LLM；`SOTABAND_LOAD_DOTENV=0` 可阻止验收读取本机 `.env`。不要复制开发者的 `.env`。用户选择外部低氧数据目录时不需要额外设置受信任数据根或重启后端。
 
 旧 `SPO2_HYPOXEMIA_PROJECT`、`SPO2_HYPOXEMIA_PYTHON`、`SPO2_HYPOXEMIA_PIPELINE_SCRIPT` 已退出运行路径，新安装不需要它们。计算进程默认由 `.venv-hypoxemia` 启动；只有管理员显式配置新的解释器覆盖变量才会使用其他环境。
 

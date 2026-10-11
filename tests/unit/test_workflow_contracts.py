@@ -81,7 +81,7 @@ class WorkflowContractTests(unittest.IsolatedAsyncioTestCase):
         tool = {"id": adapter.profile.tool_id}
         self.assertEqual(
             adapter.apply_context("session", tool, "train", {}),
-            {"dataset": "dataset-1", "model_id": "model-1"},
+            {"dataset": "D:/runtime/data", "model_id": "model-1"},
         )
         self.assertEqual(
             adapter.apply_context("session", tool, "evaluate", {}),

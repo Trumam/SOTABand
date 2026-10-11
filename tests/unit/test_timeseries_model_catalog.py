@@ -31,6 +31,15 @@ def test_catalog_contains_only_five_channel_models():
     assert models["TimesNet"]["available"] is True
     assert len(models) == 44
     assert "SegRNNParamPlethTriFusion" not in models
+    for name in ("KANAD", "MultiPatchFormer", "TiDE", "WPMixer"):
+        assert models[name]["available"] is False
+        assert "分类" in models[name]["reason"]
+
+
+@pytest.mark.parametrize("model_name", ["KANAD", "MultiPatchFormer", "TiDE", "WPMixer"])
+def test_unimplemented_classification_is_rejected_before_training(model_name):
+    with pytest.raises(ValueError, match="尚未支持分类任务"):
+        tool._resolve_training_configuration({"model_id": model_name})
 
 
 def test_registered_dataset_id_resolves_to_visible_path(tmp_path, monkeypatch):
@@ -185,6 +194,40 @@ def test_custom_model_design_extracts_submitted_architecture():
     assert result["data"]["missing_sections"] == []
 
 
+def test_operation_guide_derived_model_example_registers_trainable_configuration(monkeypatch):
+    captured = {}
+
+    def fake_call(api_name, **params):
+        assert api_name == "api-model-register"
+        captured.update(params)
+        return {"model_id": "model-guide-example", "name": params["name"]}
+
+    monkeypatch.setattr(tool, "_call_api", fake_call)
+    result = tool._analyze_custom_model_design({
+        "description": """请创建并注册一个名为 GuideSegRNNDerived 的可训练模型。
+模型来源：SegRNN。
+输入：256x5 五通道生理信号，通道顺序为 SpO2、HR、PR、RR、PI。
+编码器：沿用 SegRNN 编码器，隐藏维度 d_model=32。
+时序聚合：沿用 SegRNN 的时序分段聚合。
+分类头：二分类头，输出低氧和非低氧两类。
+训练：使用 AdamW，1 轮，批次大小 8，学习率 0.00025。""",
+        "base_model": "SegRNN",
+        "model_resource_name": "GuideSegRNNDerived",
+        "model_config": {"d_model": 32},
+        "training_config": {"epochs": 1, "batch_size": 8, "learning_rate": 0.00025, "use_ema": False},
+        "register_model": True,
+    })
+
+    assert result["status"] == "success"
+    assert result["data"]["trainable"] is True
+    assert result["data"]["model_id"] == "model-guide-example"
+    assert result["data"]["missing_sections"] == []
+    assert captured["name"] == "GuideSegRNNDerived"
+    assert captured["training_config"]["model_name"] == "SegRNN"
+    assert captured["training_config"]["architecture"]["d_model"] == 32
+    assert captured["training_config"]["training"]["epochs"] == 1
+
+
 def test_custom_model_design_can_reparse_its_rendered_summary():
     result = tool._analyze_custom_model_design({"description": """自定义模型设计：transformer_gru_v1
 - 输入：256x5 五通道生理信号
@@ -275,6 +318,27 @@ def test_raw_processing_request_passes_custom_staging_root(tmp_path, builtin_com
     command = result["data"]["task_request"]["command"]
     assert command[-2:] == ["--staging-root", str(staging.resolve())]
     assert result["data"]["staging_root"] == str(staging)
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_raw_processing_request_rejects_staging_root_overlapping_source(
+    tmp_path, builtin_component, nested
+):
+    source = tmp_path / "raw-data"
+    source.mkdir()
+    archive = source / "monitor-export.zip"
+    with zipfile.ZipFile(archive, "w") as zipped:
+        zipped.writestr("ParameterData/monitor.csv", "Time,SpO2,HR,PR,RR,PI\n")
+
+    staging = source if not nested else source / "staging"
+    result = tool._build_raw_processing_request({
+        "source_path": str(source),
+        "staging_root": str(staging),
+    })
+
+    assert result["status"] == "failed"
+    assert "staging_root" in result["message"]
+    assert "原始数据目录" in result["message"]
 
 
 def test_raw_processing_request_accepts_window_and_balance_settings(tmp_path, builtin_component):
@@ -378,12 +442,11 @@ def test_training_request_maps_learning_rate_and_optimizer_to_script_flags(tmp_p
     assert "--learning-rate" not in command
 
 
-def test_runtime_uploads_are_trusted_for_training(tmp_path, monkeypatch):
-    runtime = tmp_path / "runtime"
-    uploaded = runtime / "uploads" / "batch-1" / "window_features.pkl"
+def test_external_dataset_paths_do_not_require_a_trusted_root(tmp_path, monkeypatch):
+    external = tmp_path / "external-data"
+    uploaded = external / "batch-1" / "window_features.pkl"
     uploaded.parent.mkdir(parents=True)
     uploaded.write_bytes(b"test")
-    monkeypatch.setattr(tool, "RUNTIME_ROOT", runtime)
     monkeypatch.setenv("SPO2_HYPOXEMIA_TRUSTED_DATA_ROOTS", "")
     assert tool._is_trusted_pickle(uploaded)
 

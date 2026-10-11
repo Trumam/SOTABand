@@ -1,67 +1,55 @@
-# 内置低氧计算迁移验收记录
+# 内置低氧功能测试记录
 
-## 开发起点与现场保护
+本文只记录测试环境、测试命令、实际结果和未覆盖范围。运行数据、患者数据、模型权重和日志均保存在被 Git 忽略的 `.runtime/` 目录，不属于交付内容。
 
-开发分支为 `refactor/timeseries-workflow`，起点 `b24c000`。开始时有 19 个已修改文件和 6 个未跟踪文件；内容涉及任务生命周期、评测保护、资源引用、文档及验收脚本。开始前已在被忽略的 `.runtime/migration-audit` 保存补丁与未跟踪文件副本。继续在这些改动上开发，没有 reset、清理或覆盖用户改动。
+## 测试环境
 
-历史基线及原审查工作区只读。用户指南采用原审查文档中仍然准确的界面流程；架构及环境文档移除旧的外部项目运行要求。根 README 不修改。
+- Windows，Python 3.12.11，平台环境 `.venv-platform`。
+- 低氧计算环境 `.venv-hypoxemia`，PyTorch 2.5.1+cpu。
+- 前端 Node.js/npm，依赖由 `frontend/package-lock.json` 安装。
+- 测试使用合成数据；运行时清除 `SPO2_HYPOXEMIA_PROJECT`、旧解释器路径和 `.env` 读取。
 
-## 验证环境与命令
-
-目标是 Windows、Python 3.12.11、PyTorch 2.5.1+cpu。环境通过 `uv==0.8.22` 和仓库锁文件安装；平台与计算分开。运行下列命令前完成[安装步骤](hypoxemia-runtime-and-delivery.md)，验收安装加 `-WithVerification`。
+## 测试命令
 
 ```powershell
 $env:SOTABAND_LOAD_DOTENV = '0'
-$env:SOTABAND_USER_ID = 'synthetic-acceptance'
-$env:SOTABAND_RUNTIME_ROOT = Join-Path (Get-Location) '.runtime/acceptance-new'
 Remove-Item Env:SPO2_HYPOXEMIA_PROJECT -ErrorAction SilentlyContinue
 Remove-Item Env:SPO2_HYPOXEMIA_PYTHON -ErrorAction SilentlyContinue
-Remove-Item Env:SPO2_HYPOXEMIA_PIPELINE_SCRIPT -ErrorAction SilentlyContinue
-Remove-Item Env:SOTABAND_HYPOXEMIA_PYTHON -ErrorAction SilentlyContinue
-.venv-platform/Scripts/python.exe -m pytest tests/unit -q -p no:cacheprovider
-.venv-platform/Scripts/python.exe scripts/check_hypoxemia_sources.py
-.venv-platform/Scripts/python.exe scripts/verify_hypoxemia_pr.py
-$env:SOTABAND_RUNTIME_ROOT = Join-Path (Get-Location) '.runtime/acceptance-dualscale-new'
-.venv-platform/Scripts/python.exe scripts/verify_hypoxemia_pr.py --model SegRNNDualScaleV2 --skip-raw
-cd frontend
+.\.venv-platform\Scripts\python.exe -m pytest tests/unit -q
+.\.venv-hypoxemia\Scripts\python.exe scripts/check_hypoxemia_sources.py
+.\.venv-hypoxemia\Scripts\python.exe scripts/check_hypoxemia_model_catalog.py
+Push-Location frontend
 npm ci
 npm run build
+Pop-Location
 ```
 
-每次使用新的运行目录。验收脚本生成合成 CSV/ZIP 与窗口数据，经真实计算进程训练，保存模型并按模型 ID 重新选择，再按另一个数据集 ID 评测。下载走 FastAPI 文件路由；用 openpyxl 打开 HTTP 响应中的 XLSX 并核对来源及指标。
+完整链路验收使用 `scripts/verify_hypoxemia_pr.py`：合成原始 CSV/ZIP 或窗口数据 → 数据检查 → 短训练 → 保存模型 → 按模型 ID 重选 → 另一数据集评测 → HTTP 下载 Excel。每次验收使用新的 `SOTABAND_RUNTIME_ROOT`，不读取旧任务登记表、旧模型绝对路径或外部研究项目。
 
-## 当前结果
+## 测试结果
 
 | 检查 | 结果 |
 | --- | --- |
-| 迁移前单元测试 | 105 通过 |
-| 前端构建 | 通过；存在原有 chunk 大小及混合静态/动态导入警告 |
-| 新建 Python 3.12.11 平台环境单元测试 | 109 通过 |
-| 新平台环境健康接口 | HTTP 200，healthy |
-| 模型实现来源校验 | 48 个文件（47 个 Python 文件和 LICENSE）通过 SHA-256 校验 |
-| CPU 目录模型导入追踪 | 42 个导入通过；两个 Mamba 模型单独标记需要 CUDA 扩展 |
-| CSV/ZIP 原始处理 | 24 个合成设备、28,800 行；生成并登记 24 个 256×5 窗口（12 阳性、12 阴性） |
-| SegRNN 短训练、保存、重新选择 | 48 窗口训练 1 epoch；权重、scaler、配置、阈值、manifest 均保存并成功重载 |
-| SegRNNDualScaleV2 短训练、保存、重新选择 | 同样通过 1 epoch 流程 |
-| 指定另一数据集评测 | 按 ID 选择独立 60 窗口合成数据，验证划分 8 窗口；模型路径、数据路径和 ID 一致 |
-| Excel | HTTP 200 attachment；openpyxl 打开响应内容，核对模型 ID、数据集 ID 和 F1 等单元格 |
-| 失败分支 | 2 Hz、错误通道顺序、一个 255 行窗口、全部 255 行窗口、缺失权重均拒绝；实际子进程启动失败和取消状态正确 |
-| 隔离源码安装与完整复跑 | 通过；新建两个环境、空登记表、无 `.env`、清除旧项目/解释器变量；完整复跑 CSV/ZIP → 训练 → 保存 → 按 ID 评测 → HTTP 下载 |
+| 平台单元测试 | 131 项通过，其中包含模型分组 API 测试和创建模型示例测试 |
+| 前端构建 | `npm run build` 通过；保留既有动态导入和 bundle 大小警告 |
+| 模型实现来源校验 | 内置 Time-Series-Library 来源文件和许可证校验通过 |
+| 目录模型计算烟测 | 44 个条目：38 个通过，6 个明确跳过，0 个失败；覆盖训练前向、反向、AdamW 更新、普通评估和 EMA 评估 |
+| 目录模型跳过项 | `KANAD`、`MultiPatchFormer`、`TiDE`、`WPMixer` 上游未实现分类；两个 Mamba 模型需要 CUDA 扩展 |
+| 已登记模型配置 | 21 个资源中 20 个有效；历史无效 TimeMixer 配置在提交前拒绝，不自动修改 |
+| 低氧端到端流程 | TimeMixer、SegRNN、SegRNNDualScaleV2 已用合成数据完成训练、保存、模型 ID 重载、独立数据集评测和 Excel 打开检查 |
+| 数据契约失败分支 | 错误采样率、错误通道顺序、短窗口、缺失权重、模型或数据元数据不完整均明确拒绝 |
+| 任务生命周期 | 启动失败、取消、重复领取和重复完成状态有单元测试覆盖 |
+| 模型空间分类与分组 | 空分组、同名跨类别分组、刷新持久化、系统分组删除保护、非空分组删除保护测试通过；训练产物不完整时不会进入已训练列表 |
+| 创建新的模型示例 | 使用 `GuideSegRNNDerived` 描述在隔离运行目录调用真实注册接口，得到 `configured`、`creation_type=custom-model`、`model_name=SegRNN` 的可训练配置资源；未生成权重，符合配置与权重分离规则 |
+| 服务健康 | 后端 `8002/api/health`、前端代理 `/api/health` 和前端首页均返回 HTTP 200 |
 
-两次开发工作区评测的合成指标分别为：SegRNN accuracy=0.75、F1=0.666667、AUC=0.9375；SegRNNDualScaleV2 accuracy=0.375、F1=0.444444、AUC=0.4375。均来自单独选择的 60 窗口数据集的验证划分，不能用于医学性能判断。
+## 测试证据
 
-独立安装复跑 SegRNN 得到相同结果，权重 SHA-256 均为 `c147ed12b734a2c64f66ffc2a8411581b85748a51aee31f02fa562fb3f55802a`。两次训练使用不同的源码根目录、虚拟环境、任务登记和运行根目录。训练及评测的 `runtime_provenance.json` 记录实际模块文件来源，全部属于当次检出的内置组件；计算进程的解释器属于当次新建环境。
+- 目录模型逐项 JSON 报告位于 `.runtime/model-catalog-checks/`，不提交到 Git。
+- 端到端证据位于各自的 `.runtime/*/acceptance.json` 或 `evidence.json`，不提交到 Git。
+- Excel 使用 `openpyxl` 打开下载响应，并核对模型 ID、数据集 ID、指标和来源字段。
 
-本地证据（全部忽略，不随 PR 提交）：`.runtime/builtin-acceptance-2/acceptance.json`、`.runtime/builtin-acceptance-dual-2/acceptance.json`、`.runtime/clean-source-a/.runtime/clean-acceptance-1/acceptance.json`、`.runtime/migration-audit/clean-install-evidence.json`。隔离安装复用了可下载的包缓存，未复用旧虚拟环境；大包 wheel 与 PyPI 发布 SHA-256 核对。原外部研究项目没有移动或删除。
+## 未覆盖范围
 
-安装期间系统盘缓存空间不足，随后将下载缓存及临时目录切换至工作区 `.runtime`；没有删除用户数据。缓存只包含可重新下载的包，不包含旧虚拟环境或模型产物。
-
-## 来源与范围
-
-模型库上游为 `thuml/Time-Series-Library`，交付内容与固定提交 `4e938a1767106324dd753b2a44832bf870a0252e` 比对。45 个上游 Python 文件及 MIT LICENSE 一致；两个研究项目新增文件单独列入 `SOURCE.json`。备份本身缺少 Git 元数据，无法据此断言它原来的 checkout 提交；不把训练权重当作模型实现依赖。
-
-合成指标只用于验证流程，不代表医学性能。GPU/CUDA/Mamba、Linux、所有目录模型的完整训练、人工浏览器逐步操作、在线 LLM 服务和真实临床数据性能不属于已经通过的验证。多实例、强杀恢复、实时报警和在线单窗口预测也不在本次交付范围。
-
-## 审查分支
-
-阶段 A 已完整通过，随后才开始准备新的本地审查分支。不会推送、创建 PR 或合并 main。
+- 未在 Windows CPU 环境验证 Mamba/CUDA 扩展；不宣称原生 Windows GPU 可用。
+- 目录模型烟测不等于每个模型都完成完整数据处理、长轮次训练或医学性能验证。

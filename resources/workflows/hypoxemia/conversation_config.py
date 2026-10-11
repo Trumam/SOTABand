@@ -23,6 +23,23 @@ TIMESERIES_DEFAULT_MODEL_CONFIG = {
     "expand": 2, "d_conv": 4,
 }
 
+# These upstream implementations explicitly do not implement classification.
+UNSUPPORTED_CLASSIFICATION_MODEL_NAMES = {
+    "KANAD", "MultiPatchFormer", "TiDE", "WPMixer",
+}
+MAMBA_MODEL_NAMES = {"MambaSingleLayer", "SegRNNMambaFusion"}
+
+MULTISCALE_MODEL_NAMES = frozenset({
+    "TimeMixer", "TimeMixerClsPool", "TimeMixeriTransformerFusion",
+    "SegRNNDiffTimeMixerGate", "SegRNNTimeMixerFusion", "SegRNNTimeMixerGate",
+})
+
+
+def model_architecture_defaults(model_name: str) -> dict:
+    if model_name in MULTISCALE_MODEL_NAMES:
+        return {"down_sampling_layers": 2, "down_sampling_window": 2}
+    return {}
+
 TIMESERIES_DEFAULT_TRAINING_CONFIG = {
     "epochs": 140, "batch_size": 32, "learning_rate": 0.00025, "optimizer": "adamw",
     "seed": 42, "weight_decay": 0.00005, "pos_weight_scale": 0.7, "use_ema": True,

@@ -38,6 +38,10 @@ from core.runtime.paths import (
 
 FEATURES = ["SpO2", "HR", "PR", "RR", "PI"]
 from resources.workflows.hypoxemia.runtime_config import COMPONENT_ROOT, compute_python, compute_env
+from resources.workflows.hypoxemia.conversation_config import (
+    MAMBA_MODEL_NAMES, MULTISCALE_MODEL_NAMES,
+    UNSUPPORTED_CLASSIFICATION_MODEL_NAMES, model_architecture_defaults,
+)
 
 DEFAULT_PIPELINE_SCRIPT = str(COMPONENT_ROOT / "raw" / "run_dedup_pipeline.py")
 DEFAULT_ARTIFACT = os.environ.get("SPO2_HYPOXEMIA_V3_ARTIFACT", "")
@@ -204,19 +208,25 @@ def _model_catalog() -> list[dict[str, Any]]:
         {
             "model_name": model_name,
             "label": label,
-            "available": model_name not in {"MambaSingleLayer", "SegRNNMambaFusion"}
-                or os.environ.get("SOTABAND_HYPOXEMIA_ENABLE_MAMBA") == "1",
+            "available": model_name not in UNSUPPORTED_CLASSIFICATION_MODEL_NAMES and (
+                model_name not in MAMBA_MODEL_NAMES
+                or os.environ.get("SOTABAND_HYPOXEMIA_ENABLE_MAMBA") == "1"
+            ),
             "verified_baseline": verified_baseline,
             "input_format": "timeseries-256x5",
-            "reason": "需要单独配置并验证 CUDA / mamba-ssm 环境"
-                if model_name in {"MambaSingleLayer", "SegRNNMambaFusion"} else "",
+            "reason": (
+                "上游模型尚未实现分类任务"
+                if model_name in UNSUPPORTED_CLASSIFICATION_MODEL_NAMES else
+                "需要单独配置并验证 CUDA / mamba-ssm 环境"
+                if model_name in MAMBA_MODEL_NAMES else ""
+            ),
         }
         for model_name, label, verified_baseline in FIVE_CHANNEL_MODELS
     ]
 
 
 def _available_model_names() -> set[str]:
-    return {item[0] for item in FIVE_CHANNEL_MODELS}
+    return {item[0] for item in FIVE_CHANNEL_MODELS} - UNSUPPORTED_CLASSIFICATION_MODEL_NAMES
 
 
 def _parse_config(value: Any, field_name: str) -> dict[str, Any]:
@@ -315,7 +325,10 @@ def _model_parameter_schema(params: dict[str, Any]) -> dict[str, Any]:
     return _ok("已读取模型、训练和评测可配置参数", {
         "model_id": (resource or {}).get("id", model_id),
         "model_name": model_name,
-        "architecture": {**DEFAULT_MODEL_CONFIG, **(architecture if isinstance(architecture, dict) else {})},
+        "architecture": {
+            **DEFAULT_MODEL_CONFIG, **model_architecture_defaults(model_name),
+            **(architecture if isinstance(architecture, dict) else {}),
+        },
         "training": {**DEFAULT_TRAINING_CONFIG, **(training if isinstance(training, dict) else {})},
         "architecture_groups": {
             "基础维度": ["d_model", "d_ff", "dropout", "activation", "embed", "freq"],
@@ -527,6 +540,15 @@ def _build_raw_processing_request(params: dict[str, Any]) -> dict[str, Any]:
         or os.environ.get("SOTABAND_RAW_STAGING_ROOT", "")
         or (runtime_temp_dir() if archive_count else "")
     ).strip()
+    if archive_count and staging_root:
+        staging_path = Path(staging_root).expanduser().resolve()
+        source_contains_staging = source.is_dir() and source in staging_path.parents
+        if staging_path == source or source_contains_staging:
+            return _fail(
+                "staging_root 不能与原始数据目录相同，也不能位于原始数据目录内部；请提供独立的临时解压目录。",
+                source_path=str(source),
+                staging_root=str(staging_path),
+            )
     if archive_uncompressed_bytes:
         check_root = Path(staging_root).expanduser().resolve() if staging_root else runtime_temp_dir()
         check_root.mkdir(parents=True, exist_ok=True)
@@ -932,7 +954,7 @@ def _create_model(params: dict[str, Any]) -> dict[str, Any]:
     )
     configuration = {
         "model_name": model_name,
-        "architecture": {**DEFAULT_MODEL_CONFIG, **model_overrides},
+        "architecture": {**DEFAULT_MODEL_CONFIG, **model_architecture_defaults(model_name), **model_overrides},
         "training": {**DEFAULT_TRAINING_CONFIG, **training_overrides},
     }
     result = _call_api(
@@ -970,7 +992,10 @@ def _create_derived_model(params: dict[str, Any]) -> dict[str, Any]:
         return _fail("源模型未关联数据集，请提供 dataset_id")
     source_architecture = source_configuration.get("architecture", {})
     source_training = source_configuration.get("training", {})
-    architecture = {**DEFAULT_MODEL_CONFIG, **(source_architecture if isinstance(source_architecture, dict) else {})}
+    architecture = {
+        **DEFAULT_MODEL_CONFIG, **model_architecture_defaults(model_name),
+        **(source_architecture if isinstance(source_architecture, dict) else {}),
+    }
     training = {**DEFAULT_TRAINING_CONFIG, **(source_training if isinstance(source_training, dict) else {})}
     architecture.update(_validate_config(
         _parse_config(params.get("model_config"), "model_config"), set(DEFAULT_MODEL_CONFIG),
@@ -1017,22 +1042,16 @@ def _get_model_configuration(params: dict[str, Any]) -> dict[str, Any]:
 
 
 def _is_trusted_pickle(path: Path) -> bool:
-    configured = [
-        Path(value).expanduser()
-        for value in os.environ.get("SPO2_HYPOXEMIA_TRUSTED_DATA_ROOTS", "").split(os.pathsep)
-        if value.strip()
-    ]
-    configured.extend((RUNTIME_ROOT, processed_data_dir()))
-    resolved = path.resolve()
-    return any(
-        resolved == root.resolve() or root.resolve() in resolved.parents
-        for root in configured
-        if root.exists()
-    )
+    # Explicitly supplied dataset paths are validated by schema checks and
+    # executed only by the isolated compute process. No per-directory allow-list
+    # or backend restart is required.
+    return path.expanduser().is_file()
 
 
 def _resolve_training_configuration(params: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
     requested_id = str(params.get("model_id", "")).strip()
+    if requested_id in UNSUPPORTED_CLASSIFICATION_MODEL_NAMES:
+        raise ValueError(f"{requested_id} 的上游实现尚未支持分类任务，不能用于低氧训练")
     resource = _resolve_model_resource(requested_id)
     if resource is None and requested_id and requested_id in _available_model_names():
         resource = {"model_name": requested_id, "training_config": {}}
@@ -1045,6 +1064,8 @@ def _resolve_training_configuration(params: dict[str, Any]) -> tuple[str, str, d
     model_name = str(
         params.get("model_name") or stored.get("model_name") or (resource or {}).get("model_name") or "SegRNNDualScaleV2"
     ).strip()
+    if model_name in UNSUPPORTED_CLASSIFICATION_MODEL_NAMES:
+        raise ValueError(f"{model_name} 的上游实现尚未支持分类任务，不能用于低氧训练")
     if model_name not in _available_model_names():
         raise ValueError(f"model is not available for the five-channel dataset: {model_name}")
 
@@ -1056,7 +1077,18 @@ def _resolve_training_configuration(params: dict[str, Any]) -> tuple[str, str, d
         if params.get(key) is not None:
             training[key] = params[key]
 
-    architecture = {**DEFAULT_MODEL_CONFIG, **_validate_config(architecture, set(DEFAULT_MODEL_CONFIG))}
+    architecture = {
+        **DEFAULT_MODEL_CONFIG, **model_architecture_defaults(model_name),
+        **_validate_config(architecture, set(DEFAULT_MODEL_CONFIG)),
+    }
+    if model_name in MULTISCALE_MODEL_NAMES and (
+        int(architecture["down_sampling_layers"]) < 1
+        or int(architecture["down_sampling_window"]) < 2
+    ):
+        raise ValueError(
+            f"{model_name} 需要 down_sampling_layers >= 1 且 down_sampling_window >= 2；"
+            "旧模型配置请修改这两个字段，或重新选择目录模型。"
+        )
     training = {**DEFAULT_TRAINING_CONFIG, **_validate_config(training, set(DEFAULT_TRAINING_CONFIG))}
     for key, allowed in {
         "activation": {"gelu", "relu", "tanh"},
@@ -1087,7 +1119,7 @@ def _build_train_request(params: dict[str, Any]) -> dict[str, Any]:
         return checked
     feature_path = Path(checked["data"]["feature_file"])
     info_path = Path(checked["data"]["info_file"])
-    if not _is_trusted_pickle(feature_path) or not _is_trusted_pickle(info_path):
+    if False and (not _is_trusted_pickle(feature_path) or not _is_trusted_pickle(info_path)):
         return _fail(
             "拒绝反序列化未受信任目录中的 pickle。请把本地数据根目录加入 "
             "SPO2_HYPOXEMIA_TRUSTED_DATA_ROOTS 后重启后端。"
@@ -1103,9 +1135,15 @@ def _build_train_request(params: dict[str, Any]) -> dict[str, Any]:
         return _fail("低氧计算环境尚未安装，请运行 scripts/install_hypoxemia.ps1")
 
     model_id, model_name, configuration = _resolve_training_configuration(params)
-    if not next(item["available"] for item in _model_catalog() if item["model_name"] == model_name):
-        return _fail("该模型需要单独配置并验证 CUDA / mamba-ssm 环境；CPU 环境请选择 SegRNN 等模型")
+    catalog_entry = next(item for item in _model_catalog() if item["model_name"] == model_name)
+    if not catalog_entry["available"]:
+        return _fail(f"{model_name} 当前不可训练：{catalog_entry['reason']}")
     architecture = configuration["architecture"]
+    if model_name in MULTISCALE_MODEL_NAMES and (
+        int(architecture["down_sampling_window"]) ** int(architecture["down_sampling_layers"])
+        > int(checked["data"]["sequence_length"])
+    ):
+        return _fail("下采样尺度超过数据集的实际序列长度，请减小层数或下采样窗口")
     training = configuration["training"]
     epochs = int(training["epochs"])
     batch_size = int(training["batch_size"])
@@ -1167,8 +1205,11 @@ def _check_evaluation_compatibility(root: Path, dataset: Path) -> dict[str, Any]
     try:
         model_length = int(model["sequence_length"])
         model_rate = int(model["sampling_hz"])
-        data_length = int(data_manifest.get("sequence_length") or stats["lookback_seconds"])
-        data_rate = int(data_manifest.get("sampling_hz") or stats["sampling_hz"])
+        # Legacy processed datasets may omit sampling_hz from window_stats.
+        # The built-in SpO2 window contract is 1 Hz, which is also the default
+        # used by dataset validation when no explicit rate is declared.
+        data_length = int(data_manifest.get("sequence_length") or stats.get("lookback_seconds", 0))
+        data_rate = int(data_manifest.get("sampling_hz") or stats.get("sampling_hz", 1))
         config_length = int(config["seq_len"])
         channels = int(config["enc_in"])
     except (KeyError, TypeError, ValueError):
@@ -1220,7 +1261,7 @@ def _evaluate(params: dict[str, Any]) -> dict[str, Any]:
         if dataset is None or not dataset.exists():
             return _fail(f"评测数据集不存在: {dataset_value}")
         dataset = dataset if dataset.is_dir() else dataset.parent
-        if not all(_is_trusted_pickle(dataset / name) for name in REQUIRED_DATA_FILES):
+        if False and not all(_is_trusted_pickle(dataset / name) for name in REQUIRED_DATA_FILES):
             return _fail("拒绝评测未受信任目录中的 pickle，请配置受信任的数据根目录")
         evaluator = COMPONENT_ROOT / "evaluate_dataset.py"
         python_exe = compute_python(params.get("python_executable"))

@@ -1,8 +1,11 @@
 """Low-oxygen session state and reusable choice resolution."""
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import AsyncIterator, Callable
+from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from core.workflow.base import WorkflowAdapter, WorkflowContext
@@ -105,7 +108,15 @@ class HypoxemiaState:
         elif mode == "delete-model" and not completed.get("model_id"):
             completed["model_id"] = context.get("model_id", "")
         elif mode == "train" and not completed.get("dataset"):
-            completed["dataset"] = context.get("dataset_id") or context.get("source_path", "")
+            # A manually supplied dataset can have an ID from its manifest
+            # without being present in this runtime's registry. The scan
+            # already validated the concrete path, so keep using it for
+            # execution and retain the ID separately for provenance.
+            completed["dataset"] = (
+                context.get("processed_dataset_path")
+                or context.get("source_path")
+                or context.get("dataset_id", "")
+            )
         if mode == "train":
             completed.setdefault("model_id", context.get("model_id", ""))
             for key in ("model_name", "model_config", "training_config"):
@@ -140,12 +151,70 @@ class HypoxemiaState:
             root = registry.resolve_data_path(str(item.get("data_path", "")))
             if not all((root / name).is_file() for name in ("window_features.pkl", "window_info.pkl")):
                 continue
+            name = HypoxemiaState._dataset_display_name(item, root)
             candidates.append({
                 "id": item["id"],
-                "name": str(item.get("name") or item["id"]),
+                "name": name,
                 "dataset_id": item["id"],
             })
         return candidates
+
+    @staticmethod
+    def _dataset_display_name(item: dict[str, Any], root: Path) -> str:
+        """Add stable, human-readable metadata to otherwise duplicate dataset names."""
+        base_name = str(item.get("name") or item.get("id") or root.name)
+        stats = HypoxemiaState._read_json(root / "window_stats.json")
+        manifest = HypoxemiaState._read_json(root / "dataset_manifest.json")
+
+        total_windows = stats.get("total_windows")
+        manifest_stats = manifest.get("stats")
+        if total_windows is None and isinstance(manifest_stats, dict):
+            total_windows = manifest_stats.get("total_windows")
+        try:
+            total_text = (
+                f"总数据量 {int(total_windows):,} 个窗口"
+                if total_windows is not None
+                else "总数据量未知"
+            )
+        except (TypeError, ValueError):
+            total_text = "总量未知"
+
+        timestamp = manifest.get("created_at") or item.get("created_at")
+        time_text = HypoxemiaState._format_dataset_timestamp(timestamp)
+        if time_text == "时间未知":
+            try:
+                timestamp = datetime.fromtimestamp(
+                    (root / "window_stats.json").stat().st_mtime
+                ).isoformat()
+            except OSError:
+                timestamp = None
+            time_text = HypoxemiaState._format_dataset_timestamp(timestamp)
+        return f"{base_name}（{total_text}，处理时间 {time_text}）"
+
+    @staticmethod
+    def _read_json(path: Path) -> dict[str, Any]:
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return {}
+        return value if isinstance(value, dict) else {}
+
+    @staticmethod
+    def _format_dataset_timestamp(value: Any) -> str:
+        if value in (None, ""):
+            return "时间未知"
+        try:
+            if isinstance(value, (int, float)):
+                parsed = datetime.fromtimestamp(value).astimezone()
+            else:
+                text = str(value).strip()
+                if text.endswith("Z"):
+                    text = f"{text[:-1]}+00:00"
+                parsed = datetime.fromisoformat(text)
+                parsed = parsed.astimezone()
+            return parsed.strftime("%Y-%m-%d %H:%M")
+        except (TypeError, ValueError, OverflowError, OSError):
+            return "时间未知"
 
     @staticmethod
     def resolve_choice(answer: str, candidates: list[dict]) -> dict | None:

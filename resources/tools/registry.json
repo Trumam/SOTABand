@@ -1975,6 +1975,41 @@
     "visibility": "public"
   },
   {
+    "id": "download-voc2007-dataset",
+    "name": "下载VOC2007数据集",
+    "version": "0.1.0",
+    "type": "function",
+    "language": "python",
+    "status": "active",
+    "spec_path": "definitions/download-voc2007-dataset.md",
+    "impl_path": "implementations/download-voc2007-dataset/",
+    "input_schema": {},
+    "output_schema": {},
+    "param_meta": [
+      {
+        "name": "dataset",
+        "type": "string",
+        "required": true,
+        "default": null,
+        "desc": "保存的数据集名称，同时作为注册时的数据集标识",
+        "hints": [
+          "VOC2007"
+        ]
+      }
+    ],
+    "modes": [],
+    "tags": [
+      "数据集下载",
+      "数据注册",
+      "图像数据",
+      "目标检测"
+    ],
+    "usage_count": 0,
+    "created_at": "2026-09-12T10:34:49Z",
+    "owner": "local-bf30593d",
+    "visibility": "public"
+  },
+  {
     "id": "custom-model-caller",
     "name": "自定义模型调用器",
     "version": "0.1.0",
@@ -2310,41 +2345,6 @@
     ],
     "usage_count": 0,
     "created_at": "2026-09-11T12:09:43Z",
-    "owner": "local-bf30593d",
-    "visibility": "public"
-  },
-  {
-    "id": "download-voc2007-dataset",
-    "name": "下载VOC2007数据集",
-    "version": "0.1.0",
-    "type": "function",
-    "language": "python",
-    "status": "active",
-    "spec_path": "definitions/download-voc2007-dataset.md",
-    "impl_path": "implementations/download-voc2007-dataset/",
-    "input_schema": {},
-    "output_schema": {},
-    "param_meta": [
-      {
-        "name": "dataset",
-        "type": "string",
-        "required": true,
-        "default": null,
-        "desc": "保存的数据集名称，同时作为注册时的数据集标识",
-        "hints": [
-          "VOC2007"
-        ]
-      }
-    ],
-    "modes": [],
-    "tags": [
-      "数据集下载",
-      "数据注册",
-      "图像数据",
-      "目标检测"
-    ],
-    "usage_count": 0,
-    "created_at": "2026-09-12T10:34:49Z",
     "owner": "local-bf30593d",
     "visibility": "public"
   },

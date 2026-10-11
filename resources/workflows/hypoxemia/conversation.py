@@ -1,5 +1,6 @@
 """Low-oxygen conversation stages, parameter collection and event formatting."""
 import json
+import os
 import re
 import time
 from pathlib import Path
@@ -10,6 +11,8 @@ from .conversation_config import (
     TIMESERIES_MODEL_NAMES, TIMESERIES_DEFAULT_MODEL_CONFIG,
     TIMESERIES_DEFAULT_TRAINING_CONFIG, EVALUATION_METRICS,
     RAW_PROCESSING_PARAMETER_DEFS, RAW_PROCESSING_PARAMETER_LIMITS,
+    MAMBA_MODEL_NAMES, UNSUPPORTED_CLASSIFICATION_MODEL_NAMES,
+    model_architecture_defaults,
 )
 
 
@@ -584,7 +587,9 @@ class HypoxemiaConversation:
                         "data": {"text": self._format_timeseries_dataset_source(tool_result)},
                     }
                     return
-                if matched_tool["id"] == "timeseries-classification-runner" and selected_mode_id == "validate":
+                if (matched_tool["id"] == "timeseries-classification-runner"
+                        and selected_mode_id == "validate"
+                        and tool_result.get("status") == "success"):
                     for event in self._queue_timeseries_choice(
                         session_key, "workflow-kind", "选择低氧血症后续操作",
                         "数据扫描和五通道文件检查已完成。请选择训练新模型，或加载已训练模型进行评测。",
@@ -669,7 +674,9 @@ class HypoxemiaConversation:
                         "data": {"text": self._format_timeseries_model_configuration(tool_result)},
                     }
                     return
-                if matched_tool["id"] == "timeseries-classification-runner" and selected_mode_id == "evaluate":
+                if (matched_tool["id"] == "timeseries-classification-runner"
+                        and selected_mode_id == "evaluate"
+                        and tool_result.get("status") == "success"):
                     evaluation = tool_result.get("data", {}) if isinstance(tool_result.get("data"), dict) else {}
                     metrics = evaluation.get("selected_metrics", {})
                     metric_lines = []
@@ -866,9 +873,12 @@ class HypoxemiaConversation:
     @staticmethod
     def _timeseries_model_selection_candidates(include_trained: bool = False) -> list[dict]:
         """Return trainable architecture/resources; trained artifacts are opt-in."""
+        selectable = TIMESERIES_MODEL_NAMES - UNSUPPORTED_CLASSIFICATION_MODEL_NAMES
+        if os.environ.get("SOTABAND_HYPOXEMIA_ENABLE_MAMBA") != "1":
+            selectable -= MAMBA_MODEL_NAMES
         candidates = [
             {"id": name, "name": name, "index": index}
-            for index, name in enumerate(sorted(TIMESERIES_MODEL_NAMES), 1)
+            for index, name in enumerate(sorted(selectable), 1)
         ]
         try:
             from core.resource.registry.model_registry import ModelRegistry
@@ -876,6 +886,8 @@ class HypoxemiaConversation:
                 if item.get("associated_tool_id") != "timeseries-classification-runner":
                     continue
                 if item.get("runtime_status") == "trained" and not include_trained:
+                    continue
+                if item.get("model_name") not in selectable:
                     continue
                 candidates.append({
                     "id": item.get("id", ""),
@@ -907,10 +919,29 @@ class HypoxemiaConversation:
         candidates = []
         try:
             from core.resource.registry.model_registry import ModelRegistry
+            from core.runtime.paths import timeseries_runs_dir
+
+            runs_root = timeseries_runs_dir().resolve()
+            required_files = (
+                "best_model.pt",
+                "scaler.pkl",
+                "tslib_model_config.json",
+                "threshold_report_f1.json",
+                "manifest.json",
+            )
             for item in ModelRegistry()._read():
                 if item.get("associated_tool_id") != "timeseries-classification-runner":
                     continue
                 if item.get("runtime_status") != "trained" or not item.get("model_path"):
+                    continue
+                model_path = Path(str(item["model_path"])).expanduser().resolve()
+                artifact_root = model_path.parent
+                # Do not expose stale absolute paths from older checkouts or
+                # external research projects. Only current runtime artifacts
+                # with a complete manifest are valid evaluation candidates.
+                if runs_root != artifact_root and runs_root not in artifact_root.parents:
+                    continue
+                if not all((artifact_root / name).is_file() for name in required_files):
                     continue
                 candidates.append({
                     "id": item.get("id", ""),
@@ -919,7 +950,7 @@ class HypoxemiaConversation:
                     "resource": True,
                     "model_name": item.get("model_name", ""),
                     "runtime_status": "trained",
-                    "model_path": item.get("model_path", ""),
+                    "model_path": str(model_path),
                 })
         except Exception:
             pass
@@ -1236,9 +1267,21 @@ class HypoxemiaConversation:
                     self._pending_timeseries_choice[session_key] = pending
                     return
                 resource_id = result.get("data", {}).get("model_id", "")
-                if resource_id:
-                    workflow["trained_model_id"] = resource_id
+                if not resource_id:
+                    yield {"event": "content", "data": {"text": "模型保存未返回模型 ID，请重试保存。"}}
+                    self._pending_timeseries_choice[session_key] = pending
+                    return
+                workflow["trained_model_id"] = resource_id
+                # Evaluation must use the registered training artifact,
+                # not the configured architecture resource.
+                workflow["model_id"] = resource_id
+                workflow["model_name"] = result.get("data", {}).get(
+                    "name", workflow.get("model_name", resource_id)
+                )
                 yield {"event": "content", "data": {"text": f"训练模型已保存到模型空间：{resource_id}"}}
+            else:
+                # A one-off evaluation uses the artifact path directly.
+                workflow["model_id"] = ""
             workflow["save_trained_model"] = choice == "save"
             for event in self._queue_evaluation_choice(session_key):
                 yield event
@@ -1716,7 +1759,11 @@ class HypoxemiaConversation:
     def _workflow_ready_summary(workflow: dict) -> str:
         overrides_architecture = workflow.get("model_config") or {}
         overrides_training = workflow.get("training_config") or {}
-        architecture = {**TIMESERIES_DEFAULT_MODEL_CONFIG, **overrides_architecture}
+        architecture = {
+            **TIMESERIES_DEFAULT_MODEL_CONFIG,
+            **model_architecture_defaults(workflow.get("model_name", "")),
+            **overrides_architecture,
+        }
         training = {**TIMESERIES_DEFAULT_TRAINING_CONFIG, **overrides_training}
         architecture_text = json.dumps(architecture, ensure_ascii=False, indent=2)
         training_text = json.dumps(training, ensure_ascii=False, indent=2)

@@ -268,7 +268,10 @@ def load_window_dataset(data_path, info_path):
         path = data_path.parent / name
         if path.is_file():
             value = json.loads(path.read_text(encoding="utf-8"))
-            rate = value.get("sampling_hz")
+            # Older processed SpO2 datasets omit sampling_hz. The pipeline
+            # contract is 1 Hz, so an omitted field uses that default while an
+            # explicitly incompatible rate is still rejected.
+            rate = value.get("sampling_hz", 1)
             length = value.get("sequence_length", value.get("lookback_seconds"))
             if rate != 1 or not isinstance(length, int) or length <= 0:
                 raise ValueError("dataset must declare sampling_hz=1 and a positive integer window length")

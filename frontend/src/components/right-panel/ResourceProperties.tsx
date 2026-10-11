@@ -125,14 +125,18 @@ function ToolFields({ resource }: { resource: ToolResource }) {
 
 function ModelFields({ resource }: { resource: ModelResource }) {
   const [group, setGroup] = useState(resource.groupPath || '其它模型')
-  const [groups, setGroups] = useState<Array<{ id: string; name: string }>>([])
+  const groups = useResourceStore((state) => state.modelGroups)
+  const fetchModelGroups = useResourceStore((state) => state.fetchModelGroups)
+  const category = resource.modelCategory || 'architecture'
+  const categoryGroups = groups.filter((item) => item.category === category)
+  const options = categoryGroups.some((item) => item.name === group)
+    ? categoryGroups
+    : [{ id: `${category}:current`, name: group, category }, ...categoryGroups]
 
   useEffect(() => {
     setGroup(resource.groupPath || '其它模型')
-    void fetch('/api/model/groups').then((res) => res.json()).then((data) => {
-      if (Array.isArray(data.groups)) setGroups(data.groups)
-    }).catch(() => {})
-  }, [resource.id, resource.groupPath])
+    void fetchModelGroups()
+  }, [resource.id, resource.groupPath, fetchModelGroups])
 
   const updateGroup = async (value: string) => {
     setGroup(value)
@@ -141,6 +145,10 @@ function ModelFields({ resource }: { resource: ModelResource }) {
       body: JSON.stringify({ group_path: value }),
     })
     if (response.ok) await useResourceStore.getState().fetchModelsFromApi()
+    else {
+      setGroup(resource.groupPath || '其它模型')
+      window.alert('模型分组更新失败')
+    }
   }
 
   return (
@@ -155,7 +163,7 @@ function ModelFields({ resource }: { resource: ModelResource }) {
           onChange={(event) => void updateGroup(event.target.value)}
           className="mt-1 w-full rounded border border-maia-border bg-maia-surface px-2 py-1 text-xs text-maia-text"
         >
-          {(groups.length ? groups : [{ id: group, name: group }]).map((item) => (
+          {options.map((item) => (
             <option key={item.id} value={item.name}>{item.name}</option>
           ))}
         </select>

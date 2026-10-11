@@ -7,10 +7,20 @@ def submit_task_result(result: dict, tool: dict) -> dict:
         return result
     from core.task.task_manager import TaskManager
     try:
+        metadata = dict(request.get("metadata") or {})
+        kind = request.get("kind", "tool")
+        if kind == "hypoxemia-data-processing":
+            metadata.setdefault("next_action", "继续")
+            metadata.setdefault("next_action_label", "扫描处理结果")
+        elif kind == "hypoxemia-training":
+            # Training completion first needs the explicit save-or-discard
+            # decision; that transition then offers evaluation.
+            metadata.setdefault("next_action", "继续")
+            metadata.setdefault("next_action_label", "保存训练模型")
         task = TaskManager().submit(
             name=request.get("name") or tool.get("name", tool["id"]),
-            command=request.get("command") or [], kind=request.get("kind", "tool"),
-            metadata=dict(request.get("metadata") or {}), cwd=request.get("cwd") or None,
+            command=request.get("command") or [], kind=kind,
+            metadata=metadata, cwd=request.get("cwd") or None,
         )
         return {
             **result, "output_format": "task", "card_type": "task-progress",

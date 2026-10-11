@@ -91,6 +91,28 @@ def test_evaluation_uses_model_id_and_records_dataset_source(tmp_path, monkeypat
     assert Path(result["data"]["file_path"]).is_file()
 
 
+def test_evaluation_accepts_legacy_stats_without_sampling_rate(tmp_path, monkeypatch):
+    dataset, artifact = make_inputs(tmp_path, monkeypatch)
+    (dataset / "dataset_manifest.json").unlink()
+    (dataset / "window_stats.json").write_text(json.dumps({
+        "lookback_seconds": 180,
+        "interval_seconds": 30,
+        "total_windows": 3,
+    }), encoding="utf-8")
+
+    def evaluate(command, **kwargs):
+        output = Path(command[command.index("--output") + 1])
+        output.write_text(json.dumps({"metrics": {"f1": 0.7},
+                                      "dataset_window_count": 1}), encoding="utf-8")
+        return type("Completed", (), {"returncode": 0, "stderr": ""})()
+
+    monkeypatch.setattr(tool.subprocess, "run", evaluate)
+    result = tool._evaluate({"dataset": str(dataset), "model_id": "model-1"})
+
+    assert result["status"] == "success"
+    assert result["data"]["dataset_id"] == ""
+
+
 def test_evaluation_rejects_model_id_path_disagreement(tmp_path, monkeypatch):
     dataset, artifact = make_inputs(tmp_path, monkeypatch)
     result = tool._evaluate({
