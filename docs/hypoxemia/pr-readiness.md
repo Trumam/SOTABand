@@ -49,6 +49,28 @@ Pop-Location
 - 端到端证据位于各自的 `.runtime/*/acceptance.json` 或 `evidence.json`，不提交到 Git。
 - Excel 使用 `openpyxl` 打开下载响应，并核对模型 ID、数据集 ID、指标和来源字段。
 
+## 独立检出与空间验收
+
+从 GitHub 的 `review/hypoxemia-builtin-20261011` 分支重新执行 `git clone --depth 1 --single-branch`，检出提交 `9c43d3b`。新目录中没有旧虚拟环境、旧任务注册表、旧模型产物或 `.env`。通过公开依赖安装 `uv==0.8.22`，再执行 `scripts/install_hypoxemia.ps1 -WithVerification`；两套 Python 3.12.11 环境均在新目录创建，低氧环境安装 `torch==2.5.1+cpu`。安装时将 `UV_PYTHON_INSTALL_DIR` 指向该检出的 `.runtime/uv-python`，避免复用机器上已有的 uv Python。首次下载遇到网络超时，改走本机网络代理后安装成功。
+
+在此新检出中执行 `npm ci`、`npm run build`、`pytest tests/unit -q`、来源校验与模型目录烟测，结果分别为前端构建通过、131 项单元测试通过、48 个来源文件校验通过、38 个模型通过且 6 个明确跳过。清除旧低氧项目环境变量并设置 `SOTABAND_LOAD_DOTENV=0`，使用新 `SOTABAND_RUNTIME_ROOT` 运行 `verify_hypoxemia_pr.py --model SegRNN`：合成原始 ZIP 生成 24 个窗口；单轮训练得到模型 ID；按 ID 重载后在另一数据集的 8 个验证窗口评测；Excel 下载路由返回 HTTP 200，工作簿及模型、数据集来源核对通过。错误采样率、通道顺序、短窗口、缺失权重、任务启动失败和取消均按预期拒绝或记录。
+
+另在该新检出启动后端 `18002` 与前端 `15174`，后端健康接口、前端首页和前端代理健康接口均返回 HTTP 200；验收后关闭这两个专用服务。使用不同端口是因为默认 `8002/5174` 已被其他本地进程占用。没有使用真实 LLM API Key，未人工验证浏览器中的对话交互。
+
+| 新检出内容 | 文件逻辑大小，约 |
+| --- | ---: |
+| Git 检出源码及 `.git` | 34 MiB |
+| 平台虚拟环境 | 76 MiB |
+| 低氧 CPU 虚拟环境 | 1,492 MiB |
+| 前端 `node_modules` | 134 MiB |
+| uv 管理的 Python 3.12.11 | 63 MiB |
+| uv 下载/安装缓存 | 1,536 MiB |
+| npm 与 pip 缓存 | 53 MiB |
+| 本次合成短流程产物 | 8 MiB |
+| 整个新检出目录 | 约 3.32 GiB |
+
+文件逻辑大小包含虚拟环境和缓存中可能共享的文件，不能简单等同于磁盘实际增量；本机 D 盘可用空间在验收前后约减少 2 GiB。建议全新 Windows CPU 安装至少预留 **5 GiB**，有原始 ZIP 时还要额外预留 ZIP 展开量、处理后的数据及训练结果空间；这些会随实际数据规模增长。只使用平台时不安装低氧虚拟环境及 PyTorch，空间需求明显较低，但本次未单独测量平台独立安装的磁盘增量。
+
 ## 未覆盖范围
 
 - 未在 Windows CPU 环境验证 Mamba/CUDA 扩展；不宣称原生 Windows GPU 可用。
