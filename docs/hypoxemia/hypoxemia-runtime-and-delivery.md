@@ -2,7 +2,69 @@
 
 首次使用的完整安装、API 配置、前后端启动及三个界面示例见[从零操作指南](hypoxemia-operation-guide.md)。本页补充依赖和交付边界，实际验证记录统一见 [pr-readiness.md](pr-readiness.md)。
 
-低氧计算源码和模型实现随仓库提供。安装不需要外部研究项目、历史任务目录或预训练权重。平台与计算进程使用两个受管理的虚拟环境；两个环境均固定 Python 3.12.11。
+低氧计算源码和模型实现随仓库提供。安装不需要外部研究项目、历史任务目录或预训练权重。需要低氧功能时，平台与计算进程使用两个受管理的虚拟环境；两个环境均固定 Python 3.12.11。
+
+## 只安装平台，不使用低氧预测
+
+下面沿用上游 SOTABand 的“创建虚拟环境 → 安装项目 → 配置 `.env` → 启动后端与前端”顺序，命令针对本审查分支的 Windows PowerShell 和端口配置调整。只使用平台基础功能，无须安装 PyTorch、CUDA、`.venv-hypoxemia` 或运行 `scripts/install_hypoxemia.ps1`。
+
+电脑需预先安装 Git、Python 3.12、Node.js 22.12+（附带 npm）及浏览器。在仓库根目录打开 PowerShell，确认当前目录包含 `pyproject.toml` 和 `frontend`，然后执行：
+
+```powershell
+py -3.12 --version
+node --version
+npm --version
+py -3.12 -m venv .venv-platform
+.\.venv-platform\Scripts\python.exe -m pip install -e ".[dev]"
+```
+
+这与上游 README 的 `python3.12 -m venv venv`、`pip install -e ".[dev]"` 用途相同：安装平台及开发测试依赖。这里直接调用环境内的 Python，不要求激活环境；环境名改为 `.venv-platform`，便于日后按下文添加低氧计算环境。`pip install -e ".[dev]"` 根据 `pyproject.toml` 解析允许的版本。
+
+若电脑尚未安装 Python 3.12，或需要本次审查所用的确定版本，可跳过上面的 `py -3.12 -m venv` 与 `pip install`，改在新检出目录用任一可运行 `py` 的 Python 执行以下命令。它只安装平台依赖锁文件，不安装低氧计算环境：
+
+```powershell
+py -m pip install uv==0.8.22
+$uvProgram = Join-Path (py -c "import sysconfig; print(sysconfig.get_path('scripts'))") 'uv.exe'
+& $uvProgram python install 3.12.11
+& $uvProgram venv --python 3.12.11 .venv-platform
+& $uvProgram pip sync --python .venv-platform/Scripts/python.exe requirements/platform.lock
+.\.venv-platform\Scripts\python.exe --version
+```
+
+两条安装路径择一使用；锁文件路径固定 Python 3.12.11 和平台依赖版本，且不包含上游 `.[dev]` 的测试工具。需要运行单元测试时再安装开发或验收依赖，不影响正常启动平台。
+
+上游 README 的 `python scripts/check_tool_env.py --auto` 会扫描并尝试安装**所有工具**的额外依赖；只使用平台时不执行它。需要了解某个工具缺少什么，可先运行 `.\.venv-platform\Scripts\python.exe scripts/check_tool_env.py --dry-run`，再按该工具说明单独安装。低氧功能需按下一节安装独立计算环境。
+
+在本机配置对话服务的 API Key，已有 `.env` 时不要覆盖：
+
+```powershell
+if (-not (Test-Path -LiteralPath .env)) { Copy-Item .env.example .env }
+notepad .env
+```
+
+参照 `.env.example` 设置 `LLM_PROVIDER` 和自己的 `LLM_API_KEY`，必要时设置 `LLM_BASE_URL`、`LLM_MODEL`。不要提交 `.env`，也不要把 Key 输入聊天框。后端启动前，在仓库根目录安装前端依赖：
+
+```powershell
+Push-Location frontend
+npm ci
+Pop-Location
+```
+
+分别在两个 PowerShell 终端启动服务，并保持终端打开：
+
+```powershell
+# 终端 A：仓库根目录
+.\.venv-platform\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8002
+```
+
+```powershell
+# 终端 B：仓库根目录
+Set-Location frontend
+$env:SOTABAND_API_PORT = '8002'
+npm run dev -- --host 127.0.0.1 --port 5174 --strictPort
+```
+
+浏览器打开 `http://127.0.0.1:5174`。访问 `http://127.0.0.1:8002/api/health` 和 `http://127.0.0.1:5174/api/health` 应均返回 `{"status":"healthy"}`。后端使用 `8002`、前端使用 `5174`，因为本分支的前端代理默认连接 `8002`；上游 README 的 `8001` 命令不能直接与这里的前端代理混用。正常关闭时在两个终端分别按 `Ctrl+C`。平台独立安装后，低氧数据处理、训练和评测仍需要 `.venv-hypoxemia`；仅运行平台时不用准备它。
 
 ## Windows CPU 安装
 
